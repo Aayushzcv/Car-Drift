@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>Drift</title>
+<style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    background: #4d5dfa;
+    overflow: hidden;
+    overscroll-behavior: none;
+    touch-action: none;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+
+  /* fallback for older browsers that don't support dvh yet */
+  #game {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    height: 100dvh;
+  }
+
+  canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+    touch-action: none;
+  }
+
+  #discordBtn {
+    position: fixed;
+    top: 16px;
+    right: 16px;
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    background: #5865F2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    text-decoration: none;
+    transition: transform 0.15s ease;
+  }
+
+  #discordBtn:active {
+    transform: scale(0.92);
+  }
+
+  #discordBtn svg {
+    width: 28px;
+    height: 28px;
+  }
+</style>
+</head>
+<body>
+
+<div id="game">
+  <canvas id="canvas"></canvas>
+</div>
+
+<a id="discordBtn" href="https://discord.gg/JFuarzs5Fz" target="_blank" rel="noopener">
+  <svg viewBox="0 0 127.14 96.36" xmlns="http://www.w3.org/2000/svg">
+    <path fill="#ffffff" d="M107.7,8.07A105.15,105.15,0,0,0,81.47,0a72.06,72.06,0,0,0-3.36,6.83A97.68,97.68,0,0,0,49,6.83,72.37,72.37,0,0,0,45.64,0,105.89,105.89,0,0,0,19.39,8.09C2.79,32.65-1.71,56.6.54,80.21h0A105.73,105.73,0,0,0,32.71,96.36,77.7,77.7,0,0,0,39.6,85.25a68.42,68.42,0,0,1-10.85-5.18c.91-.66,1.8-1.34,2.66-2a75.57,75.57,0,0,0,64.32,0c.87.71,1.76,1.39,2.66,2a68.68,68.68,0,0,1-10.87,5.19,77,77,0,0,0,6.89,11.1A105.25,105.25,0,0,0,126.6,80.22h0C129.24,52.84,122.09,29.11,107.7,8.07ZM42.45,65.69C36.18,65.69,31,60,31,53s5-12.74,11.43-12.74S54,46,53.89,53,48.84,65.69,42.45,65.69Zm42.24,0C78.41,65.69,73.25,60,73.25,53s5-12.74,11.44-12.74S96.23,46,96.12,53,91.08,65.69,84.69,65.69Z"/>
+  </svg>
+</a>
+
+<script>
+// drag left/right to steer, hold down to keep gas on
+
+var canvas = document.getElementById('canvas');
+var ctx = canvas.getContext('2d');
+
+var viewWidth = 0;
+var viewHeight = 0;
+
+// car/grid/dust are all sized for a ~390px phone screen, so on bigger
+// screens we scale everything up a bit to match
+var worldScale = 1;
+var referenceWidth = 390;
+
+function resizeCanvas() {
+  var pixelRatio = window.devicePixelRatio || 1;
+  if (pixelRatio > 2) pixelRatio = 2; // no point going higher than this
+
+  viewWidth = window.innerWidth;
+  viewHeight = window.innerHeight;
+
+  canvas.width = Math.round(viewWidth * pixelRatio);
+  canvas.height = Math.round(viewHeight * pixelRatio);
+  canvas.style.width = viewWidth + 'px';
+  canvas.style.height = viewHeight + 'px';
+
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+  // go off the smaller side so it works in portrait and landscape,
+  // capped tight so it doesn't blow up on desktop screens
+  var referenceSide = Math.min(viewWidth, viewHeight);
+  worldScale = referenceSide / referenceWidth;
+  if (worldScale < 0.85) worldScale = 0.85;
+  if (worldScale > 1.1) worldScale = 1.1;
+}
+
+resizeCanvas();
+window.addEventListener('resize', resizeCanvas);
+// iOS fires this a bit after 'resize' on rotation, so just cover both
+window.addEventListener('orientationchange', function () {
+  setTimeout(resizeCanvas, 200);
+});
+
+// heading = which way it's pointed, moveAngle = which way it's actually
+// going. the gap between them is the drift
+var car = {
+  worldX: 0,
+  worldY: 0,
+  heading: -Math.PI / 2,
+  moveAngle: -Math.PI / 2,
+  speed: 0,
+  steer: 0,
+  width: 27,
+  height: 54
+};
+
+var topSpeed = 6.2;
+var accel = 0.22;
+var drag = 0.965;
+var turnRate = 0.055;
+
+var isPointerDown = false;
+var isGasOn = false;
+var lastPointerX = 0;
+
+function handlePointerDown(clientX) {
+  isPointerDown = true;
+  isGasOn = true;
+  lastPointerX = clientX;
+}
+
+function handlePointerMove(clientX) {
+  if (!isPointerDown) return;
+  var deltaX = clientX - lastPointerX;
+  lastPointerX = clientX;
+  car.steer += deltaX * 0.012;
+  if (car.steer > 1) car.steer = 1;
+  if (car.steer < -1) car.steer = -1;
+}
+
+function handlePointerUp() {
+  isPointerDown = false;
+  isGasOn = false;
+}
+
+canvas.addEventListener('mousedown', function (e) { handlePointerDown(e.clientX); });
+window.addEventListener('mousemove', function (e) { handlePointerMove(e.clientX); });
+window.addEventListener('mouseup', handlePointerUp);
+
+canvas.addEventListener('touchstart', function (e) {
+  handlePointerDown(e.touches[0].clientX);
+}, { passive: true });
+
+window.addEventListener('touchmove', function (e) {
+  handlePointerMove(e.touches[0].clientX);
+}, { passive: true });
+
+window.addEventListener('touchend', handlePointerUp);
+window.addEventListener('touchcancel', handlePointerUp);
+
+// dust puffs kicked up behind the car when it's sliding
+var dustParticles = [];
+
+function spawnDust(x, y, howMany) {
+  for (var i = 0; i < howMany; i++) {
+    dustParticles.push({
+      x: x + (Math.random() - 0.5) * 8,
+      y: y + (Math.random() - 0.5) * 8,
+      vx: (Math.random() - 0.5) * 0.6,
+      vy: (Math.random() - 0.5) * 0.6,
+      life: 1
+    });
+  }
+  // keep the array from growing forever during a long drift
+  if (dustParticles.length > 300) {
+    dustParticles.splice(0, dustParticles.length - 300);
+  }
+}
+
+function updateDust(dt) {
+  for (var i = dustParticles.length - 1; i >= 0; i--) {
+    var p = dustParticles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.life -= dt * 1.3;
+    if (p.life <= 0) dustParticles.splice(i, 1);
+  }
+}
+
+function drawDust(camX, camY) {
+  for (var i = 0; i < dustParticles.length; i++) {
+    var p = dustParticles[i];
+    var screenX = viewWidth / 2 + (p.x - camX) * worldScale;
+    var screenY = viewHeight / 2 + (p.y - camY) * worldScale;
+    ctx.beginPath();
+    ctx.fillStyle = 'rgba(220,225,255,' + Math.max(0, p.life) * 0.5 + ')';
+    ctx.arc(screenX, screenY, (3 + (1 - p.life) * 4) * worldScale, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// solid blue background with a moving grid so speed actually reads
+var gridSpacing = 60;
+
+function drawGround(camX, camY) {
+  ctx.fillStyle = '#4d5dfa';
+  ctx.fillRect(0, 0, viewWidth, viewHeight);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = 1.5;
+
+  var spacing = gridSpacing * worldScale;
+  var offsetX = ((camX * worldScale) % spacing + spacing) % spacing;
+  var offsetY = ((camY * worldScale) % spacing + spacing) % spacing;
+
+  ctx.beginPath();
+  for (var x = -offsetX; x < viewWidth; x += spacing) {
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, viewHeight);
+  }
+  for (var y = -offsetY; y < viewHeight; y += spacing) {
+    ctx.moveTo(0, y);
+    ctx.lineTo(viewWidth, y);
+  }
+  ctx.stroke();
+
+  // darken the corners a little, keeps focus on the car
+  var vignette = ctx.createRadialGradient(
+    viewWidth / 2, viewHeight / 2, Math.min(viewWidth, viewHeight) * 0.2,
+    viewWidth / 2, viewHeight / 2, Math.max(viewWidth, viewHeight) * 0.75
+  );
+  vignette.addColorStop(0, 'rgba(0,0,0,0)');
+  vignette.addColorStop(1, 'rgba(10,14,60,0.35)');
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, viewWidth, viewHeight);
+}
+
+// canvas has no built in rounded rect in some browsers, so just doing it by hand
+function roundedRect(x, y, w, h, radius) {
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+}
+
+function drawCar() {
+  ctx.save();
+  ctx.translate(viewWidth / 2, viewHeight / 2);
+  ctx.rotate(car.heading + Math.PI / 2);
+  ctx.scale(worldScale, worldScale);
+
+  var w = car.width;
+  var h = car.height;
+  var cornerRadius = 6;
+
+  // shadow first so everything else sits on top of it
+  ctx.save();
+  ctx.translate(2, 5);
+  ctx.fillStyle = 'rgba(10,12,50,0.22)';
+  roundedRect(-w / 2, -h / 2, w, h, cornerRadius);
+  ctx.fill();
+  ctx.restore();
+
+  // wheels
+  var wheelW = 6;
+  var wheelH = 12;
+  var wheelX = w / 2 - 0.5;
+  var wheelYFront = h / 2 - 12;
+  var wheelYRear = -h / 2 + 12;
+
+  ctx.fillStyle = '#2a2a2a';
+  drawWheel(-wheelX, wheelYFront, car.steer * 0.5);
+  drawWheel(wheelX, wheelYFront, car.steer * 0.5);
+  drawWheel(-wheelX, wheelYRear, 0);
+  drawWheel(wheelX, wheelYRear, 0);
+
+  function drawWheel(x, y, angle) {
+    ctx.save();
+    ctx.translate(x, y);
+    if (angle) ctx.rotate(angle);
+    roundedRect(-wheelW / 2, -wheelH / 2, wheelW, wheelH, 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // body
+  ctx.fillStyle = '#f6bc1e';
+  roundedRect(-w / 2, -h / 2, w, h, cornerRadius);
+  ctx.fill();
+
+  var sheen = ctx.createLinearGradient(-w / 2, -h / 2, w / 2, h / 2);
+  sheen.addColorStop(0, 'rgba(255,255,255,0.22)');
+  sheen.addColorStop(0.5, 'rgba(255,255,255,0.02)');
+  sheen.addColorStop(1, 'rgba(0,0,0,0.07)');
+  ctx.fillStyle = sheen;
+  roundedRect(-w / 2, -h / 2, w, h, cornerRadius);
+  ctx.fill();
+
+  ctx.strokeStyle = '#1c1c1c';
+  ctx.lineWidth = 2;
+  roundedRect(-w / 2, -h / 2, w, h, cornerRadius);
+  ctx.stroke();
+
+  // long front bonnet - just a subtle panel, no center seam
+  var bonnetLength = h * 0.34;
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  roundedRect(-w / 2 + 3, -h / 2 + 2, w - 6, bonnetLength, 4);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(28,28,28,0.28)';
+  ctx.lineWidth = 1;
+  roundedRect(-w / 2 + 3, -h / 2 + 2, w - 6, bonnetLength, 4);
+  ctx.stroke();
+
+  // windshield right after the bonnet
+  var windshieldY = -h / 2 + bonnetLength + 2;
+  ctx.fillStyle = '#fbeecb';
+  roundedRect(-w / 2 + 4, windshieldY, w - 8, 9, 3);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(28,28,28,0.4)';
+  ctx.lineWidth = 1;
+  roundedRect(-w / 2 + 4, windshieldY, w - 8, 9, 3);
+  ctx.stroke();
+
+  // two side windows per side, sized to fill the cabin space evenly
+  var cabinTop = windshieldY + 9 + 2;
+  var cabinBottom = h / 2 - 13;
+  var cabinHeight = cabinBottom - cabinTop;
+  var windowCount = 2;
+  var windowGap = 3;
+  var windowHeight = (cabinHeight - windowGap * (windowCount - 1)) / windowCount;
+  var windowWidth = 6;
+
+  for (var i = 0; i < windowCount; i++) {
+    var wy = cabinTop + i * (windowHeight + windowGap);
+
+    ctx.fillStyle = '#fbeecb';
+    roundedRect(-w / 2 + 1.5, wy, windowWidth, windowHeight, 1.5);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(28,28,28,0.4)';
+    ctx.lineWidth = 0.8;
+    roundedRect(-w / 2 + 1.5, wy, windowWidth, windowHeight, 1.5);
+    ctx.stroke();
+
+    ctx.fillStyle = '#fbeecb';
+    roundedRect(w / 2 - 1.5 - windowWidth, wy, windowWidth, windowHeight, 1.5);
+    ctx.fill();
+    roundedRect(w / 2 - 1.5 - windowWidth, wy, windowWidth, windowHeight, 1.5);
+    ctx.stroke();
+  }
+
+  // rear window
+  ctx.fillStyle = '#fbeecb';
+  roundedRect(-w / 2 + 4, h / 2 - 11, w - 8, 8, 3);
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(28,28,28,0.4)';
+  ctx.lineWidth = 1;
+  roundedRect(-w / 2 + 4, h / 2 - 11, w - 8, 8, 3);
+  ctx.stroke();
+
+  // headlights
+  ctx.fillStyle = '#fff8e0';
+  roundedRect(-w / 2 + 3, -h / 2 + 1, 5, 2.6, 1.3);
+  ctx.fill();
+  roundedRect(w / 2 - 8, -h / 2 + 1, 5, 2.6, 1.3);
+  ctx.fill();
+
+  // taillights
+  ctx.fillStyle = '#d94a3d';
+  roundedRect(-w / 2 + 3, h / 2 - 3.6, 5, 2.6, 1.3);
+  ctx.fill();
+  roundedRect(w / 2 - 8, h / 2 - 3.6, 5, 2.6, 1.3);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// not real physics, just tuned until it felt right
+function updateCar(dt) {
+  if (!isPointerDown) {
+    car.steer *= 0.92; // let go and the wheel drifts back toward center
+  }
+
+  if (isGasOn) {
+    car.speed = Math.min(topSpeed, car.speed + accel);
+  } else {
+    car.speed *= drag;
+  }
+  if (Math.abs(car.speed) < 0.01) car.speed = 0;
+
+  var speedRatio = car.speed / topSpeed;
+  var turnAmount = car.steer * turnRate * (0.5 + speedRatio * 0.9);
+  car.heading += turnAmount;
+
+  // less grip the harder you steer, so the back end swings out
+  var grip = 0.12 + 0.10 * (1 - Math.min(1, Math.abs(car.steer)));
+  var angleGap = car.heading - car.moveAngle;
+  angleGap = Math.atan2(Math.sin(angleGap), Math.cos(angleGap));
+  car.moveAngle += angleGap * grip;
+
+  car.worldX += Math.cos(car.moveAngle) * car.speed;
+  car.worldY += Math.sin(car.moveAngle) * car.speed;
+
+  var driftAmount = Math.abs(angleGap);
+  var isDrifting = car.speed > 1.2 && driftAmount > 0.08;
+  if (isDrifting) {
+    spawnDust(car.worldX, car.worldY, 4);
+  }
+
+  updateDust(dt);
+}
+
+var previousFrameTime = performance.now();
+
+function tick(now) {
+  var dt = Math.min(0.05, (now - previousFrameTime) / 1000);
+  previousFrameTime = now;
+
+  updateCar(dt);
+
+  drawGround(car.worldX, car.worldY);
+  drawDust(car.worldX, car.worldY);
+  drawCar();
+
+  requestAnimationFrame(tick);
+}
+
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>
