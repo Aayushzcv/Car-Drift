@@ -1,5 +1,7 @@
 # Drift 🚗
-
+<p align="center">
+  <img src="./assets/Drift.jpg" alt="DRIFT" width="100%">
+</p>
 A tiny top-down drift game that runs in a single HTML file. No build tools, no dependencies — just open it in a browser and play.
 
 ## How to play
